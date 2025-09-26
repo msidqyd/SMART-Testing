@@ -137,7 +137,7 @@ def SMART():
             FROM INFORMATION_SCHEMA.COLUMNS
             WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='SMI_Final'
         """)
-        return pd.read_sql_query_query(q, engine)["COLUMN_NAME"].tolist()
+        return pd.read_sql_query(q, engine)["COLUMN_NAME"].tolist()
 
     def pick_col(candidates, available):
         avail_lower = {c.lower(): c for c in available}
@@ -1004,4 +1004,5 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
