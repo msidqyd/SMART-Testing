@@ -137,7 +137,7 @@ def SMART():
             FROM INFORMATION_SCHEMA.COLUMNS
             WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='SMI_Final'
         """)
-        return pd.read_sql_query(q, engine)["COLUMN_NAME"].tolist()
+        return pd.read_sql_query_query(q, engine)["COLUMN_NAME"].tolist()
 
     def pick_col(candidates, available):
         avail_lower = {c.lower(): c for c in available}
@@ -182,7 +182,7 @@ def SMART():
         if not DIVISION_COL:
             return []
         sql = text(f"SELECT DISTINCT {DIVISION_COL} AS v FROM {TABLE}{nolock} WHERE {DIVISION_COL} IS NOT NULL ORDER BY v")
-        return pd.read_sql(sql, engine)["v"].tolist()
+        return pd.read_sql_query(sql, engine)["v"].tolist()
 
     @st.cache_data(ttl=900, show_spinner=False)
     def distinct_amo(division, nolock=""):
@@ -192,7 +192,7 @@ def SMART():
         if division and division != "All" and DIVISION_COL:
             parts.append(f" AND {DIVISION_COL}=:d"); params["d"] = division
         sql = text(f"SELECT DISTINCT {AMO_COL} AS v FROM {TABLE}{nolock}" + _where(parts) + f" AND {AMO_COL} IS NOT NULL ORDER BY v")
-        return pd.read_sql(sql, engine, params=params)["v"].tolist()
+        return pd.read_sql_query(sql, engine, params=params)["v"].tolist()
 
     @st.cache_data(ttl=900, show_spinner=False)
     def distinct_wh(division, amo, nolock=""):
@@ -204,7 +204,7 @@ def SMART():
         if amo and amo != "All" and AMO_COL:
             parts.append(f" AND {AMO_COL}=:a"); params["a"] = amo
         sql = text(f"SELECT DISTINCT {WH_COL} AS v FROM {TABLE}{nolock}" + _where(parts) + f" AND {WH_COL} IS NOT NULL ORDER BY v")
-        return pd.read_sql(sql, engine, params=params)["v"].tolist()
+        return pd.read_sql_query(sql, engine, params=params)["v"].tolist()
 
     @st.cache_data(ttl=900, show_spinner=False)
     def distinct_spv(division, amo, wh, nolock=""):
@@ -218,7 +218,7 @@ def SMART():
         if wh and wh != "All" and WH_COL:
             parts.append(f" AND {WH_COL}=:w"); params["w"] = wh
         sql = text(f"SELECT DISTINCT {SPV_COL} AS v FROM {TABLE}{nolock}" + _where(parts) + f" AND {SPV_COL} IS NOT NULL ORDER BY v")
-        return pd.read_sql(sql, engine, params=params)["v"].tolist()
+        return pd.read_sql_query(sql, engine, params=params)["v"].tolist()
 
     @st.cache_data(ttl=900, show_spinner=False)
     def distinct_region(division, amo, wh, spv, nolock=""):
@@ -234,7 +234,7 @@ def SMART():
         if spv and spv != "All" and SPV_COL:
             parts.append(f" AND {SPV_COL}=:s"); params["s"] = spv
         sql = text(f"SELECT DISTINCT {REGION_COL} AS v FROM {TABLE}{nolock}" + _where(parts) + f" AND {REGION_COL} IS NOT NULL ORDER BY v")
-        return pd.read_sql(sql, engine, params=params)["v"].tolist()
+        return pd.read_sql_query(sql, engine, params=params)["v"].tolist()
 
     @st.cache_data(ttl=900, show_spinner=False)
     def date_range(division, amo, wh, spv, region, nolock=""):
@@ -258,7 +258,7 @@ def SMART():
                 CAST(MAX({SALES_DATE_COL}) AS DATE) AS max_d
             FROM {TABLE}{nolock} {_where(parts)}
         """)
-        row = pd.read_sql(sql, engine, params=params)
+        row = pd.read_sql_query(sql, engine, params=params)
         min_d = row.loc[0, "min_d"]; max_d = row.loc[0, "max_d"]
         if pd.isna(min_d) or pd.isna(max_d):
             today = pd.Timestamp.today().date()
@@ -374,12 +374,12 @@ def SMART():
             OFFSET 0 ROWS FETCH NEXT :cap ROWS ONLY
         """)
         p = dict(params); p["cap"] = int(cap)
-        return pd.read_sql(sql, engine, params=p)
+        return pd.read_sql_query(sql, engine, params=p)
 
     @st.cache_data(ttl=300, show_spinner=True)
     def fetch_rows_full(select_list, where_sql, params, nolock=""):
         sql = text(f"SELECT {select_list} FROM {TABLE}{nolock} WHERE 1=1 {where_sql}")
-        return pd.read_sql(sql, engine, params=params)
+        return pd.read_sql_query(sql, engine, params=params)
 
     @st.cache_data(ttl=300, show_spinner=False)
     def fetch_route_summary_sql(where_sql, params, time_col=None, nolock=""):
@@ -398,7 +398,7 @@ def SMART():
         FROM {TABLE}{nolock}
         WHERE 1=1 {where_sql}
         """)
-        row = pd.read_sql(sql, engine, params=params)
+        row = pd.read_sql_query(sql, engine, params=params)
         if row.empty:
             return {"FirstVisit":"", "LastVisit":"", "FakeIndCnt":0, "RadiusGT300":0, "AvgDist":None, "AvgSecs":None}
         return row.iloc[0].to_dict()
@@ -515,7 +515,7 @@ def SMART():
         if org_name and org_name != "All": where.append("Org_Name = :org"); p["org"] = org_name
         if region_code and region_code != "All": where.append("Region_Code = :region"); p["region"] = region_code
         if where: base += " AND " + " AND ".join(where)
-        row = pd.read_sql(text(base), engine, params=p)
+        row = pd.read_sql_query(text(base), engine, params=p)
         if row.empty:
             return dict(Target_Call=0, CM_Tetap_1=0, EC_Tetap_2=0, CM_Dummy_3=0, EC_Dummy_4=0, Sales_Qty=0)
         return row.iloc[0].fillna(0).to_dict()
@@ -1004,3 +1004,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
