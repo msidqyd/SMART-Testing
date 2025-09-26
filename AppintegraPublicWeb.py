@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import pandas as pd
 from sqlalchemy import create_engine, text
 import numpy as np
 from io import BytesIO
@@ -9,7 +8,6 @@ from datetime import timedelta
 import folium
 from folium.plugins import AntPath
 from streamlit_folium import st_folium
-import streamlit as st
 import urllib
 
 USER_CREDENTIALS = {
@@ -18,8 +16,6 @@ USER_CREDENTIALS = {
 }
 
 def login():
-    import pandas as pd
-
     st.title("Login Page")
     
     username = st.text_input("Username")
@@ -29,15 +25,12 @@ def login():
         if username in USER_CREDENTIALS and USER_CREDENTIALS[username] == password:
             st.session_state.logged_in = True  
             st.success(f"Welcome {username}!")
-            st.experimental_set_query_params(page="SMART")  
+            st.query_params["page"] = "SMART"  # Fixed deprecated function
         else:
             st.error("Invalid username or password")
 
-
-
 def SMART():
     st.set_page_config(page_title="SMI Final Browser", layout="wide")
-
 
     # ============================ UI & CSS ============================
     st.markdown(
@@ -94,7 +87,7 @@ def SMART():
         """,
         unsafe_allow_html=True
     )
-    import pandas as pd
+    
     formatted_time = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
     formatted_html = f'<div class="print-note">SMI Browser — SMART Sales Monitoring & Route Tracking • Printed {formatted_time}</div>'
 
@@ -107,15 +100,19 @@ def SMART():
     # ============================ DB ENGINE (cached) ============================
     @st.cache_resource
     def make_engine():
-        s = st.secrets["dbo"]
-        odbc_str = (
-            f"DRIVER={{{s['driver']}}};"
-            f"SERVER={s['host']},{s['port']};DATABASE={s['database']};UID={s['username']};PWD={s['password']};"
-            "Encrypt=yes;TrustServerCertificate=yes;Connection Timeout=30;"
-        )
-        url = "mssql+pyodbc:///?odbc_connect=" + urllib.parse.quote_plus(odbc_str)
-
-        engine = create_engine(url)
+        try:
+            s = st.secrets["dbo"]
+            odbc_str = (
+                f"DRIVER={{{s['driver']}}};"
+                f"SERVER={s['host']},{s['port']};DATABASE={s['database']};UID={s['username']};PWD={s['password']};"
+                "Encrypt=yes;TrustServerCertificate=yes;Connection Timeout=30;"
+            )
+            url = "mssql+pyodbc:///?odbc_connect=" + urllib.parse.quote_plus(odbc_str)
+            engine = create_engine(url)
+            return engine
+        except Exception as e:
+            st.error(f"Database connection failed: {str(e)}")
+            st.stop()
 
     engine = make_engine()
     TABLE = "dbo.SMI_Final"
@@ -132,12 +129,24 @@ def SMART():
 
     @st.cache_data(ttl=900, show_spinner=False)
     def get_columns():
-        q = text("""
-            SELECT COLUMN_NAME
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='SMI_Final'
-        """)
-        return pd.read_sql_query(q, engine)["COLUMN_NAME"].tolist()
+        try:
+            # Use raw SQL string to avoid text() object issues
+            query = """
+                SELECT COLUMN_NAME
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='SMI_Final'
+            """
+            
+            # Execute using connection context
+            with engine.connect() as conn:
+                result = pd.read_sql_query(query, conn)
+            
+            return result["COLUMN_NAME"].tolist()
+            
+        except Exception as e:
+            st.error(f"Error fetching columns: {str(e)}")
+            # Return some basic columns as fallback
+            return ["Sequence", "Visit_Time", "Latitude", "Longitude", "Customer_Code", "Store_Name"]
 
     def pick_col(candidates, available):
         avail_lower = {c.lower(): c for c in available}
@@ -165,7 +174,11 @@ def SMART():
         except Exception:
             return None
 
-    ALL_COLS = get_columns()
+    try:
+        ALL_COLS = get_columns()
+    except Exception as e:
+        st.error(f"Failed to get columns: {str(e)}")
+        st.stop()
 
     # Resolve real column names from your schema (case/variant tolerant)
     DIVISION_COL   = pick_col(["Division","Divisi"], ALL_COLS)
@@ -175,96 +188,136 @@ def SMART():
     REGION_COL     = pick_col(["Region","Region_Code","Area","Area_Name"], ALL_COLS)
     SALES_DATE_COL = pick_col(["Sales_Date","Visit_Date","Trans_Date","Date"], ALL_COLS)
 
-
     # ---------- Distincts & date range with optional NOLOCK ----------
     @st.cache_data(ttl=900, show_spinner=False)
     def distinct_division(nolock=""):
         if not DIVISION_COL:
             return []
-        sql = text(f"SELECT DISTINCT {DIVISION_COL} AS v FROM {TABLE}{nolock} WHERE {DIVISION_COL} IS NOT NULL ORDER BY v")
-        return pd.read_sql_query(sql, engine)["v"].tolist()
+        try:
+            query = f"SELECT DISTINCT {DIVISION_COL} AS v FROM {TABLE}{nolock} WHERE {DIVISION_COL} IS NOT NULL ORDER BY v"
+            with engine.connect() as conn:
+                result = pd.read_sql_query(query, conn)
+            return result["v"].tolist()
+        except Exception as e:
+            st.error(f"Error fetching divisions: {str(e)}")
+            return []
 
     @st.cache_data(ttl=900, show_spinner=False)
     def distinct_amo(division, nolock=""):
         if not AMO_COL:
             return []
-        parts = []; params = {}
-        if division and division != "All" and DIVISION_COL:
-            parts.append(f" AND {DIVISION_COL}=:d"); params["d"] = division
-        sql = text(f"SELECT DISTINCT {AMO_COL} AS v FROM {TABLE}{nolock}" + _where(parts) + f" AND {AMO_COL} IS NOT NULL ORDER BY v")
-        return pd.read_sql_query(sql, engine, params=params)["v"].tolist()
+        try:
+            parts = []; params = {}
+            if division and division != "All" and DIVISION_COL:
+                parts.append(f" AND {DIVISION_COL}=:d"); params["d"] = division
+            
+            query = f"SELECT DISTINCT {AMO_COL} AS v FROM {TABLE}{nolock}" + _where(parts) + f" AND {AMO_COL} IS NOT NULL ORDER BY v"
+            with engine.connect() as conn:
+                result = pd.read_sql_query(text(query), conn, params=params)
+            return result["v"].tolist()
+        except Exception as e:
+            st.error(f"Error fetching AMO: {str(e)}")
+            return []
 
     @st.cache_data(ttl=900, show_spinner=False)
     def distinct_wh(division, amo, nolock=""):
         if not WH_COL:
             return []
-        parts = []; params = {}
-        if division and division != "All" and DIVISION_COL:
-            parts.append(f" AND {DIVISION_COL}=:d"); params["d"] = division
-        if amo and amo != "All" and AMO_COL:
-            parts.append(f" AND {AMO_COL}=:a"); params["a"] = amo
-        sql = text(f"SELECT DISTINCT {WH_COL} AS v FROM {TABLE}{nolock}" + _where(parts) + f" AND {WH_COL} IS NOT NULL ORDER BY v")
-        return pd.read_sql_query(sql, engine, params=params)["v"].tolist()
+        try:
+            parts = []; params = {}
+            if division and division != "All" and DIVISION_COL:
+                parts.append(f" AND {DIVISION_COL}=:d"); params["d"] = division
+            if amo and amo != "All" and AMO_COL:
+                parts.append(f" AND {AMO_COL}=:a"); params["a"] = amo
+            
+            query = f"SELECT DISTINCT {WH_COL} AS v FROM {TABLE}{nolock}" + _where(parts) + f" AND {WH_COL} IS NOT NULL ORDER BY v"
+            with engine.connect() as conn:
+                result = pd.read_sql_query(text(query), conn, params=params)
+            return result["v"].tolist()
+        except Exception as e:
+            st.error(f"Error fetching WH: {str(e)}")
+            return []
 
     @st.cache_data(ttl=900, show_spinner=False)
     def distinct_spv(division, amo, wh, nolock=""):
         if not SPV_COL:
             return []
-        parts = []; params = {}
-        if division and division != "All" and DIVISION_COL:
-            parts.append(f" AND {DIVISION_COL}=:d"); params["d"] = division
-        if amo and amo != "All" and AMO_COL:
-            parts.append(f" AND {AMO_COL}=:a"); params["a"] = amo
-        if wh and wh != "All" and WH_COL:
-            parts.append(f" AND {WH_COL}=:w"); params["w"] = wh
-        sql = text(f"SELECT DISTINCT {SPV_COL} AS v FROM {TABLE}{nolock}" + _where(parts) + f" AND {SPV_COL} IS NOT NULL ORDER BY v")
-        return pd.read_sql_query(sql, engine, params=params)["v"].tolist()
+        try:
+            parts = []; params = {}
+            if division and division != "All" and DIVISION_COL:
+                parts.append(f" AND {DIVISION_COL}=:d"); params["d"] = division
+            if amo and amo != "All" and AMO_COL:
+                parts.append(f" AND {AMO_COL}=:a"); params["a"] = amo
+            if wh and wh != "All" and WH_COL:
+                parts.append(f" AND {WH_COL}=:w"); params["w"] = wh
+                
+            query = f"SELECT DISTINCT {SPV_COL} AS v FROM {TABLE}{nolock}" + _where(parts) + f" AND {SPV_COL} IS NOT NULL ORDER BY v"
+            with engine.connect() as conn:
+                result = pd.read_sql_query(text(query), conn, params=params)
+            return result["v"].tolist()
+        except Exception as e:
+            st.error(f"Error fetching SPV: {str(e)}")
+            return []
 
     @st.cache_data(ttl=900, show_spinner=False)
     def distinct_region(division, amo, wh, spv, nolock=""):
         if not REGION_COL:
             return []
-        parts = []; params = {}
-        if division and division != "All" and DIVISION_COL:
-            parts.append(f" AND {DIVISION_COL}=:d"); params["d"] = division
-        if amo and amo != "All" and AMO_COL:
-            parts.append(f" AND {AMO_COL}=:a"); params["a"] = amo
-        if wh and wh != "All" and WH_COL:
-            parts.append(f" AND {WH_COL}=:w"); params["w"] = wh
-        if spv and spv != "All" and SPV_COL:
-            parts.append(f" AND {SPV_COL}=:s"); params["s"] = spv
-        sql = text(f"SELECT DISTINCT {REGION_COL} AS v FROM {TABLE}{nolock}" + _where(parts) + f" AND {REGION_COL} IS NOT NULL ORDER BY v")
-        return pd.read_sql_query(sql, engine, params=params)["v"].tolist()
+        try:
+            parts = []; params = {}
+            if division and division != "All" and DIVISION_COL:
+                parts.append(f" AND {DIVISION_COL}=:d"); params["d"] = division
+            if amo and amo != "All" and AMO_COL:
+                parts.append(f" AND {AMO_COL}=:a"); params["a"] = amo
+            if wh and wh != "All" and WH_COL:
+                parts.append(f" AND {WH_COL}=:w"); params["w"] = wh
+            if spv and spv != "All" and SPV_COL:
+                parts.append(f" AND {SPV_COL}=:s"); params["s"] = spv
+                
+            query = f"SELECT DISTINCT {REGION_COL} AS v FROM {TABLE}{nolock}" + _where(parts) + f" AND {REGION_COL} IS NOT NULL ORDER BY v"
+            with engine.connect() as conn:
+                result = pd.read_sql_query(text(query), conn, params=params)
+            return result["v"].tolist()
+        except Exception as e:
+            st.error(f"Error fetching regions: {str(e)}")
+            return []
 
     @st.cache_data(ttl=900, show_spinner=False)
     def date_range(division, amo, wh, spv, region, nolock=""):
         if not SALES_DATE_COL:
             today = pd.Timestamp.today().date()
             return today, today
-        parts = []; params = {}
-        if division and division != "All" and DIVISION_COL:
-            parts.append(f" AND {DIVISION_COL}=:d"); params["d"] = division
-        if amo and amo != "All" and AMO_COL:
-            parts.append(f" AND {AMO_COL}=:a"); params["a"] = amo
-        if wh and wh != "All" and WH_COL:
-            parts.append(f" AND {WH_COL}=:w"); params["w"] = wh
-        if spv and spv != "All" and SPV_COL:
-            parts.append(f" AND {SPV_COL}=:s"); params["s"] = spv
-        if region and region != "All" and REGION_COL:
-            parts.append(f" AND {REGION_COL}=:r"); params["r"] = region
+        try:
+            parts = []; params = {}
+            if division and division != "All" and DIVISION_COL:
+                parts.append(f" AND {DIVISION_COL}=:d"); params["d"] = division
+            if amo and amo != "All" and AMO_COL:
+                parts.append(f" AND {AMO_COL}=:a"); params["a"] = amo
+            if wh and wh != "All" and WH_COL:
+                parts.append(f" AND {WH_COL}=:w"); params["w"] = wh
+            if spv and spv != "All" and SPV_COL:
+                parts.append(f" AND {SPV_COL}=:s"); params["s"] = spv
+            if region and region != "All" and REGION_COL:
+                parts.append(f" AND {REGION_COL}=:r"); params["r"] = region
 
-        sql = text(f"""
-            SELECT CAST(MIN({SALES_DATE_COL}) AS DATE) AS min_d,
-                CAST(MAX({SALES_DATE_COL}) AS DATE) AS max_d
-            FROM {TABLE}{nolock} {_where(parts)}
-        """)
-        row = pd.read_sql_query(sql, engine, params=params)
-        min_d = row.loc[0, "min_d"]; max_d = row.loc[0, "max_d"]
-        if pd.isna(min_d) or pd.isna(max_d):
+            query = f"""
+                SELECT CAST(MIN({SALES_DATE_COL}) AS DATE) AS min_d,
+                    CAST(MAX({SALES_DATE_COL}) AS DATE) AS max_d
+                FROM {TABLE}{nolock} {_where(parts)}
+            """
+            
+            with engine.connect() as conn:
+                row = pd.read_sql_query(text(query), conn, params=params)
+            
+            min_d = row.loc[0, "min_d"]; max_d = row.loc[0, "max_d"]
+            if pd.isna(min_d) or pd.isna(max_d):
+                today = pd.Timestamp.today().date()
+                return today, today
+            return min_d, max_d
+        except Exception as e:
+            st.error(f"Error fetching date range: {str(e)}")
             today = pd.Timestamp.today().date()
             return today, today
-        return min_d, max_d
-
 
     # ============================ FILTER FORM (filters above submit) ============================
     st.sidebar.header("Filters")
@@ -281,7 +334,7 @@ def SMART():
         try:
             div_opts = ["All"] + distinct_division(nolock=nol)
         except Exception as e:
-            st.exception(e)
+            st.error(f"Database error: {str(e)}")
             st.stop()
 
         div_val = st.selectbox(
@@ -315,7 +368,7 @@ def SMART():
         ds = max(min_d, ds); de = min(max_d, de)
         date_val = st.date_input("Sales Date Range", value=(ds, de), min_value=min_d, max_value=max_d)
 
-        submitted = st.form_submit_button("✅ Apply filters")
+        submitted = st.form_submit_button("Apply filters")
 
     # safe init for first load
     if "last_df" not in st.session_state:
@@ -336,7 +389,6 @@ def SMART():
             p["start"] = pd.to_datetime(start_); p["end_next"] = end_next
             parts.append(f" AND {SALES_DATE_COL} >= :start AND {SALES_DATE_COL} < :end_next")
         return "".join(parts), p, end_next
-
 
     # ============================ Dynamic Column picking ============================
     TIME_COL   = pick_col(
@@ -366,42 +418,61 @@ def SMART():
 
     @st.cache_data(ttl=300, show_spinner=True)
     def fetch_rows(select_list, where_sql, params, cap, nolock=""):
-        sql = text(f"""
-            SELECT {select_list}
-            FROM {TABLE}{nolock}
-            WHERE 1=1 {where_sql}
-            ORDER BY Sales_Date DESC
-            OFFSET 0 ROWS FETCH NEXT :cap ROWS ONLY
-        """)
-        p = dict(params); p["cap"] = int(cap)
-        return pd.read_sql_query(sql, engine, params=p)
+        try:
+            query = f"""
+                SELECT {select_list}
+                FROM {TABLE}{nolock}
+                WHERE 1=1 {where_sql}
+                ORDER BY {SALES_DATE_COL if SALES_DATE_COL else 'Visit_Time'} DESC
+                OFFSET 0 ROWS FETCH NEXT :cap ROWS ONLY
+            """
+            p = dict(params); p["cap"] = int(cap)
+            
+            with engine.connect() as conn:
+                return pd.read_sql_query(text(query), conn, params=p)
+        except Exception as e:
+            st.error(f"Error fetching data: {str(e)}")
+            return pd.DataFrame()
 
     @st.cache_data(ttl=300, show_spinner=True)
     def fetch_rows_full(select_list, where_sql, params, nolock=""):
-        sql = text(f"SELECT {select_list} FROM {TABLE}{nolock} WHERE 1=1 {where_sql}")
-        return pd.read_sql_query(sql, engine, params=params)
+        try:
+            query = f"SELECT {select_list} FROM {TABLE}{nolock} WHERE 1=1 {where_sql}"
+            with engine.connect() as conn:
+                return pd.read_sql_query(text(query), conn, params=params)
+        except Exception as e:
+            st.error(f"Error fetching full data: {str(e)}")
+            return pd.DataFrame()
 
     @st.cache_data(ttl=300, show_spinner=False)
     def fetch_route_summary_sql(where_sql, params, time_col=None, nolock=""):
-        if time_col:
-            avg_part = f"AVG(DATEDIFF(SECOND, 0, TRY_CONVERT(time(0), {time_col}))) AS AvgSecs"
-        else:
-            avg_part = "CAST(NULL AS float) AS AvgSecs"
-        sql = text(f"""
-        SELECT
-        MIN(Visit_Time) AS FirstVisit,
-        MAX(Visit_Time) AS LastVisit,
-        SUM(CASE WHEN TRY_CONVERT(float, Fake_Indication) > 1 THEN 1 ELSE 0 END) AS FakeIndCnt,
-        SUM(CASE WHEN TRY_CONVERT(float, {RADIUS_COL or 'NULL'}) > 300 THEN 1 ELSE 0 END)  AS RadiusGT300,
-        AVG(TRY_CONVERT(float, {DIST_COL or 'NULL'})) AS AvgDist,
-        {avg_part}
-        FROM {TABLE}{nolock}
-        WHERE 1=1 {where_sql}
-        """)
-        row = pd.read_sql_query(sql, engine, params=params)
-        if row.empty:
+        try:
+            if time_col:
+                avg_part = f"AVG(DATEDIFF(SECOND, 0, TRY_CONVERT(time(0), {time_col}))) AS AvgSecs"
+            else:
+                avg_part = "CAST(NULL AS float) AS AvgSecs"
+            
+            query = f"""
+            SELECT
+            MIN(Visit_Time) AS FirstVisit,
+            MAX(Visit_Time) AS LastVisit,
+            SUM(CASE WHEN TRY_CONVERT(float, Fake_Indication) > 1 THEN 1 ELSE 0 END) AS FakeIndCnt,
+            SUM(CASE WHEN TRY_CONVERT(float, {RADIUS_COL or 'NULL'}) > 300 THEN 1 ELSE 0 END)  AS RadiusGT300,
+            AVG(TRY_CONVERT(float, {DIST_COL or 'NULL'})) AS AvgDist,
+            {avg_part}
+            FROM {TABLE}{nolock}
+            WHERE 1=1 {where_sql}
+            """
+            
+            with engine.connect() as conn:
+                row = pd.read_sql_query(text(query), conn, params=params)
+            
+            if row.empty:
+                return {"FirstVisit":"", "LastVisit":"", "FakeIndCnt":0, "RadiusGT300":0, "AvgDist":None, "AvgSecs":None}
+            return row.iloc[0].to_dict()
+        except Exception as e:
+            st.error(f"Error fetching route summary: {str(e)}")
             return {"FirstVisit":"", "LastVisit":"", "FakeIndCnt":0, "RadiusGT300":0, "AvgDist":None, "AvgSecs":None}
-        return row.iloc[0].to_dict()
 
     # ============================ Run / Session flow (define canonical vars) ============================
     if submitted:
@@ -417,12 +488,11 @@ def SMART():
         selected_wh, selected_spv, selected_region = wh_val, spv_val, region_val
 
         where_sql, params, end_next = build_where(selected_div, selected_amo, selected_wh, selected_spv, selected_region, start_date, end_date)
-        nolock = " WITH (NOLOCK)" if dirty_read else ""
-        try:
-            df = fetch_rows(select_list, where_sql, params, cap=max_rows, nolock=nolock)
-        except Exception as e:
-            st.error(f"Query failed")
-            st.exception(e)
+        
+        df = fetch_rows(select_list, where_sql, params, cap=max_rows, nolock=nolock)
+        
+        if df.empty:
+            st.warning("No data found for the selected filters.")
             st.stop()
 
         st.session_state["last_df"] = df
@@ -446,7 +516,6 @@ def SMART():
         end_date        = f.get("end_date", (st.session_state["date_range"] or [None, None])[1])
         end_next        = f.get("end_next", pd.to_datetime(end_date) + pd.Timedelta(days=1))
         dirty_read      = f.get("dirty_read", dirty_read)
-        nolock = " WITH (NOLOCK)" if dirty_read else ""
         where_sql, params, _ = build_where(selected_div, selected_amo, selected_wh, selected_spv, selected_region, start_date, end_date)
 
     # ============================ Rename & Clean ============================
@@ -499,26 +568,32 @@ def SMART():
     # ============================ Sales Monitoring ============================
     @st.cache_data(ttl=300, show_spinner=False)
     def load_cmec_summary(start_date, end_next, org_name=None, region_code=None, dirty=False):
-        nolock2 = " WITH (NOLOCK)" if dirty else ""
-        base = f"""
-            SELECT 
-                SUM(CAST(Tetap_outlet AS float))  AS Target_Call,
-                SUM(CAST(CM_Tetap_1_ AS float))   AS CM_Tetap_1,
-                SUM(CAST(EC_Tetap_2_ AS float))   AS EC_Tetap_2,
-                SUM(CAST(CM_Dummy_3_ AS float))   AS CM_Dummy_3,
-                SUM(CAST(EC_Dummy_4_ AS float))   AS EC_Dummy_4,
-                SUM(CAST(Sales_Qty_  AS float))   AS Sales_Qty
-            FROM dbo.cmec{nolock2}
-            WHERE Sales_Date >= :start AND Sales_Date < :end_next
-        """
-        where = []; p = {"start": pd.to_datetime(start_date), "end_next": pd.to_datetime(end_next)}
-        if org_name and org_name != "All": where.append("Org_Name = :org"); p["org"] = org_name
-        if region_code and region_code != "All": where.append("Region_Code = :region"); p["region"] = region_code
-        if where: base += " AND " + " AND ".join(where)
-        row = pd.read_sql_query(text(base), engine, params=p)
-        if row.empty:
+        try:
+            nolock2 = " WITH (NOLOCK)" if dirty else ""
+            base = f"""
+                SELECT 
+                    SUM(CAST(Tetap_outlet AS float))  AS Target_Call,
+                    SUM(CAST(CM_Tetap_1_ AS float))   AS CM_Tetap_1,
+                    SUM(CAST(EC_Tetap_2_ AS float))   AS EC_Tetap_2,
+                    SUM(CAST(CM_Dummy_3_ AS float))   AS CM_Dummy_3,
+                    SUM(CAST(EC_Dummy_4_ AS float))   AS EC_Dummy_4,
+                    SUM(CAST(Sales_Qty_  AS float))   AS Sales_Qty
+                FROM dbo.cmec{nolock2}
+                WHERE Sales_Date >= :start AND Sales_Date < :end_next
+            """
+            where = []; p = {"start": pd.to_datetime(start_date), "end_next": pd.to_datetime(end_next)}
+            if org_name and org_name != "All": where.append("Org_Name = :org"); p["org"] = org_name
+            if region_code and region_code != "All": where.append("Region_Code = :region"); p["region"] = region_code
+            if where: base += " AND " + " AND ".join(where)
+            
+            with engine.connect() as conn:
+                row = pd.read_sql_query(text(base), conn, params=p)
+            
+            if row.empty:
+                return dict(Target_Call=0, CM_Tetap_1=0, EC_Tetap_2=0, CM_Dummy_3=0, EC_Dummy_4=0, Sales_Qty=0)
+            return row.iloc[0].fillna(0).to_dict()
+        except Exception:
             return dict(Target_Call=0, CM_Tetap_1=0, EC_Tetap_2=0, CM_Dummy_3=0, EC_Dummy_4=0, Sales_Qty=0)
-        return row.iloc[0].fillna(0).to_dict()
 
     cm = load_cmec_summary(start_date, end_next, selected_amo, selected_region, dirty=dirty_read)
 
@@ -769,11 +844,11 @@ def SMART():
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.download_button("⬇️ Download CSV (current)", data=to_csv_bytes(df_view), file_name="SMI_Final_filtered.csv", mime="text/csv")
+        st.download_button("Download CSV (current)", data=to_csv_bytes(df_view), file_name="SMI_Final_filtered.csv", mime="text/csv")
     with c2:
-        st.download_button("⬇️ Download XLSX (current)", data=to_xlsx_bytes(df_view, sales_rows, route_summary), file_name="SMART_Report.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button("Download XLSX (current)", data=to_xlsx_bytes(df_view, sales_rows, route_summary), file_name="SMART_Report.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     with c3:
-        if st.button("⬇️ Download FULL XLSX (no cap)"):
+        if st.button("Download FULL XLSX (no cap)"):
             df_full = fetch_rows_full(select_list, where_sql, params, nolock=nolock).rename(columns=rename_map)
             if "Distance (m)" in df_full.columns:
                 df_full["Distance (m)"] = pd.to_numeric(df_full["Distance (m)"].astype(str).str.replace(r"[^0-9.]", "", regex=True).replace("", None), errors="coerce").round(0)
@@ -789,11 +864,6 @@ def SMART():
             )
 
     import tempfile
-    import folium
-    import pandas as pd
-    from folium.plugins import AntPath
-    from folium.features import CustomIcon
-    from streamlit_folium import st_folium
 
     st.markdown('<div class="section-title">Salesman Route vs Outlet Map</div>', unsafe_allow_html=True)
 
@@ -824,9 +894,9 @@ def SMART():
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix="." + uploaded_file.name.split(".")[-1])
             tmp.write(uploaded_file.getbuffer())
             tmp.flush()
-            return CustomIcon(tmp.name, icon_size=(size, size), icon_anchor=(size // 2, size // 2))
+            return folium.features.CustomIcon(tmp.name, icon_size=(size, size), icon_anchor=(size // 2, size // 2))
         if url_str:
-            return CustomIcon(url_str, icon_size=(size, size), icon_anchor=(size // 2, size // 2))
+            return folium.features.CustomIcon(url_str, icon_size=(size, size), icon_anchor=(size // 2, size // 2))
         return None
 
     sales_icon = _logo_icon(sales_logo_file, sales_logo_url, sales_size)
@@ -836,11 +906,11 @@ def SMART():
     required = ["Latitude", "Longitude", "Customer Code", "Store Name", "Visit Time", "Visit Division"]
     missing = [col for col in required if col not in df.columns]
     if missing:
-        st.error(f"❌ Missing columns: {missing}")
+        st.error(f"Missing columns: {missing}")
     else:
         df_map = df.dropna(subset=["Latitude", "Longitude"], how="any").copy()
         if df_map.empty:
-            st.warning("⚠️ No valid salesman coordinates found.")
+            st.warning("No valid salesman coordinates found.")
         else:
             if "Sequence" in df_map.columns:
                 df_map["Sequence"] = pd.to_numeric(df_map["Sequence"], errors="coerce")
@@ -1002,7 +1072,4 @@ def main():
 
 # Run the app
 if __name__ == "__main__":
-
-    main()
-
-
+    main()"
