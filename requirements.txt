@@ -3,4 +3,5 @@ pandas
 sqlalchemy
 numpy
 folium
+pyodbc
 streamlit_folium
