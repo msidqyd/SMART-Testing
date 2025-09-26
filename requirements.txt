@@ -5,3 +5,5 @@ numpy
 folium
 pyodbc
 streamlit_folium
+
+xlsxwriter 
